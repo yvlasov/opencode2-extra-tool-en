@@ -1,0 +1,43 @@
+{
+  "name": "@vaur94/opencode2-extra-tool",
+  "version": "0.2.2",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Session-scoped todo and taskflow tools for OpenCode V2.",
+  "type": "module",
+  "main": "./dist/plugin.js",
+  "exports": {
+    ".": "./dist/plugin.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yvlasov/opencode2-extra-tool-en.git"
+  },
+  "originalRepository": "git+https://github.com/ugur-murat-alt/opencode2-extra-tool.git (deleted upstream)",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build": "bun build src/index.ts --outfile=dist/plugin.js --target=bun",
+    "check": "bun run typecheck && bun test && bun run build",
+    "prepublishOnly": "bun run check"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "todo"
+  ],
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-beta-18314"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}
