@@ -21133,7 +21133,7 @@ function taskFlowHistorySnapshots(state) {
 function taskFlowToolFactory(store) {
   return {
     name: "taskflow",
-    description: "Persist and track the complete plan for the current session until every required step is finished. Update step statuses at meaningful milestones. Use blocked only when a verified blocker prevents further work; blocked work pauses automatic continuation without completing the plan. Do not repeat an unchanged plan after every action.",
+    description: "Persist and track the complete plan for the current session until every required step is finished. Update step statuses at meaningful milestones. Use blocked only when a verified blocker prevents further work; blocked work pauses automatic continuation without completing the plan. Do not repeat an unchanged plan after every action. Use it for substantial durable work; for a lightweight session checklist use todowrite.",
     input: {
       type: "object",
       properties: {
@@ -21378,7 +21378,7 @@ async function registerTaskFlow(ctx, options = {}) {
 var TODO_STATUSES = ["pending", "in_progress", "completed", "cancelled"];
 var TODO_PRIORITIES = ["high", "medium", "low"];
 var TODO_REMINDER_INTERVAL = 10;
-var TODO_REMINDER = "Do not forget the TODO list.";
+var TODO_REMINDER = "Keep the TODO list current; it is the user's live view of your progress.";
 var TODO_STATE_VERSION = 1;
 var TODO_STORAGE_PREFIX = "todowrite/session/";
 function todoStorageKey(sessionID) {
@@ -21502,7 +21502,7 @@ function todowriteToolFactory(store) {
   const updatesBySession = new Map;
   return {
     name: "todowrite",
-    description: "Create and maintain a structured task list for the current coding session. Use it to track progress during multi-step work and keep todo statuses current.",
+    description: "Create and maintain a structured todo list for the current session; the sidebar shows it to the user live. Keep statuses current during work. For durable plans with acceptance criteria and resume-on-idle, use taskflow.",
     input: {
       type: "object",
       properties: {
@@ -21512,16 +21512,16 @@ function todowriteToolFactory(store) {
           items: {
             type: "object",
             properties: {
-              content: { type: "string", description: "Brief description of the task" },
+              content: { type: "string", description: "Brief description of the todo" },
               status: {
                 type: "string",
                 enum: TODO_STATUSES,
-                description: "Current status of the task: pending, in_progress, completed, cancelled"
+                description: "Current status of the todo: pending, in_progress, completed, cancelled"
               },
               priority: {
                 type: "string",
                 enum: TODO_PRIORITIES,
-                description: "Priority level of the task: high, medium, low"
+                description: "Priority level of the todo: high, medium, low"
               }
             },
             required: ["content", "status", "priority"]
