@@ -8,8 +8,11 @@ An OpenCode V2 plugin that provides the `todowrite` and `taskflow` tools.
 > published npm package `@vaur94/opencode2-extra-tool@0.2.2` (which contains
 > only the unminified esbuild bundle, `dist/plugin.js` — no TypeScript sources).
 > Every model-facing Turkish string in the bundle was translated to English;
-> all logic is byte-identical to the published 0.2.2 bundle. MIT license and
-> upstream attribution (© 2026 Ugur Murat Alt) are preserved. This fork is not
+> the 0.2.2 logic is preserved unchanged. Features added after the
+> reconstruction (todo persistence, the sidebar widget, and the backend
+> `todos`/`events` routes) are documented below and keep the shipped tool
+> contracts intact. MIT license and upstream attribution (© 2026 Ugur Murat Alt)
+> are preserved. This fork is not
 > published to npm; `npm install` of the `@vaur94` name still fetches the
 > original (Turkish-strings) package.
 
@@ -22,15 +25,24 @@ An OpenCode V2 plugin that provides the `todowrite` and `taskflow` tools.
 ```
 
 To use this fork instead of the original npm package (English model-facing
-strings), place the bundle in OpenCode's local plugins directory:
+strings), place both entries in OpenCode's local plugins directory:
 
 ```sh
 mkdir -p ~/.config/opencode/plugins/opencode2-extra-tool-en
 cp dist/plugin.js ~/.config/opencode/plugins/opencode2-extra-tool-en/plugin.js
+cp dist/tui.tsx ~/.config/opencode/plugins/opencode2-extra-tool-en/tui.tsx
 ```
 
+`plugin.js` is the server entry (tools + storage + loopback backend). `tui.tsx`
+is the TUI entry and renders the todo list in the sidebar; it needs the usual
+TUI plugin dependencies in `~/.config/opencode/package.json`
+(`@opencode-ai/plugin`, `@opentui/solid`, `solid-js`).
+
 `todowrite` replaces the current session's full structured task list. Its input is
-`{ todos: [{ content, status, priority }] }`; an empty list clears it.
+`{ todos: [{ content, status, priority }] }`; an empty list clears it. The list
+persists in OpenCode plugin storage across restarts and is shown live in the
+sidebar widget (`tui.tsx`), which is fed by the loopback endpoint described
+below — no transcript parsing, no polling.
 
 ## Taskflow
 
@@ -66,3 +78,10 @@ loopback endpoint discovered through
 `${XDG_STATE_HOME:-~/.local/state}/opencode2-extra-tool/taskflow-backend.json`.
 This endpoint is intended for a local bridge such as `opencode2-web`; it is not
 exposed directly to browsers.
+
+The same endpoint also serves the todo state: `GET /v1/todos/:session` returns
+the session's current list (`{ available, todos }`), and `GET /v1/events` is a
+server-sent event stream that emits `event: todos` frames
+(`{ sessionID, todos, version }`) on every `todowrite` call, with a comment
+heartbeat every 15 s. The TUI sidebar widget consumes exactly these two routes,
+so the sidebar stays in sync without any transcript access.
