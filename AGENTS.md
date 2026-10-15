@@ -18,7 +18,7 @@ OpenCode V2 plugin providing the `todowrite` and `taskflow` tools. It is a recon
 ## Distribution
 
 - This fork is **not published** to npm. `npm install @vaur94/opencode2-extra-tool` fetches the original *Turkish-strings* package.
-- The English fork is used by copying `dist/plugin.js` and `dist/tui.tsx` to `~/.config/opencode/plugins/opencode2-extra-tool-en/`. After any edit, both files must be re-copied to take effect.
+- The English fork is used by copying `dist/plugin.js` **as `index.js`** and `dist/tui.tsx` to `~/.config/opencode/plugins/opencode2-extra-tool-en/`. The loader only recognizes `index.*` (server entry) and `tui.*` (TUI entry) inside a plugin directory — a `plugin.js` there is silently never loaded. After edits, re-copy both files and restart the `opencode serve` process (plugins load at server startup, not per TUI launch; verified via the server log's `loading plugin` entries).
 
 ## Editing conventions
 

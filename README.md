@@ -25,13 +25,20 @@ An OpenCode V2 plugin that provides the `todowrite` and `taskflow` tools.
 ```
 
 To use this fork instead of the original npm package (English model-facing
-strings), place both entries in OpenCode's local plugins directory:
+strings), place both entries in OpenCode's local plugins directory — the
+server entry must be named `index.js` and the TUI entry `tui.tsx` (the loader
+resolves `index.*` / `tui.*` inside a plugin directory; any other filename is
+ignored):
 
 ```sh
 mkdir -p ~/.config/opencode/plugins/opencode2-extra-tool-en
-cp dist/plugin.js ~/.config/opencode/plugins/opencode2-extra-tool-en/plugin.js
+cp dist/plugin.js ~/.config/opencode/plugins/opencode2-extra-tool-en/index.js
 cp dist/tui.tsx ~/.config/opencode/plugins/opencode2-extra-tool-en/tui.tsx
 ```
+
+Plugins load at OpenCode server startup, so restart the server after copying
+(a TUI relaunch alone is not enough if the `opencode serve` process keeps
+running).
 
 `plugin.js` is the server entry (tools + storage + loopback backend). `tui.tsx`
 is the TUI entry and renders the todo list in the sidebar; it needs the usual
