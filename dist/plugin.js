@@ -20575,6 +20575,31 @@ async function close2(server) {
 }
 async function startTaskFlowBackend(readSnapshot, options = {}) {
   const token = randomBytes(32).toString("hex");
+  const sseClients = new Set;
+  function sseRespond(response2) {
+    response2.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
+    response2.write(": connected\n\n");
+    const client = {
+      response: response2,
+      heartbeat: setInterval(() => {
+        try {
+          response2.write(": hb\n\n");
+        } catch (error) {
+          clearInterval(client.heartbeat);
+          sseClients.delete(client);
+        }
+      }, 15000)
+    };
+    sseClients.add(client);
+    response2.on("close", () => {
+      clearInterval(client.heartbeat);
+      sseClients.delete(client);
+    });
+  }
   const server = createServer(async (request3, response2) => {
     try {
       if (!authorized(request3.headers.authorization, token))
@@ -20582,6 +20607,16 @@ async function startTaskFlowBackend(readSnapshot, options = {}) {
       if (request3.method !== "GET")
         return send(response2, 405, { error: "method_not_allowed" });
       const url = new URL(request3.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/v1/events")
+        return sseRespond(response2);
+      const todosMatch = /^\/v1\/todos\/([^/]+)$/.exec(url.pathname);
+      if (todosMatch) {
+        const todoSessionID = decodeURIComponent(todosMatch[1] ?? "").trim();
+        if (!todoSessionID || todoSessionID.length > 256)
+          return send(response2, 400, { error: "invalid_session" });
+        const todos = options.readTodos ? await options.readTodos(todoSessionID) : [];
+        return send(response2, 200, { available: true, todos: todos ?? [] });
+      }
       const historyMatch = /^\/v1\/taskflows\/([^/]+)\/history$/.exec(url.pathname);
       const snapshotMatch = /^\/v1\/taskflows\/([^/]+)$/.exec(url.pathname);
       const match8 = historyMatch ?? snapshotMatch;
@@ -20623,7 +20658,25 @@ async function startTaskFlowBackend(readSnapshot, options = {}) {
     throw error;
   }
   return {
+    pushTodos: (sessionID, todos, version2) => {
+      const frame = `event: todos\ndata: ${JSON.stringify({ sessionID, todos, version: version2 })}\n\n`;
+      for (const client of sseClients) {
+        try {
+          client.response.write(frame);
+        } catch (error) {
+          clearInterval(client.heartbeat);
+          sseClients.delete(client);
+        }
+      }
+    },
     dispose: async () => {
+      for (const client of sseClients) {
+        clearInterval(client.heartbeat);
+        try {
+          client.response.end();
+        } catch {}
+      }
+      sseClients.clear();
       await close2(server);
       try {
         const current = JSON.parse(await readFile(file, "utf8"));
@@ -21080,7 +21133,7 @@ function taskFlowHistorySnapshots(state) {
 function taskFlowToolFactory(store) {
   return {
     name: "taskflow",
-    description: "Persist and track the complete plan for the current session until every required step is finished. Update step statuses at meaningful milestones. Use blocked only when a verified blocker prevents further work; blocked work pauses automatic continuation without completing the plan. Do not repeat an unchanged plan after every action.",
+    description: "Persist and track the complete plan for the current session until every required step is finished. Update step statuses at meaningful milestones. Use blocked only when a verified blocker prevents further work; blocked work pauses automatic continuation without completing the plan. Do not repeat an unchanged plan after every action. Use it for substantial durable work; for a lightweight session checklist use todowrite.",
     input: {
       type: "object",
       properties: {
@@ -21250,12 +21303,24 @@ async function registerTaskFlow(ctx, options = {}) {
       const state = await store.get(sessionID);
       return state ? taskFlowSnapshot(state) : undefined;
     };
-    backend = options.startBackend ? await options.startBackend(readSnapshot) : await startTaskFlowBackend(readSnapshot, {
-      readHistory: async (sessionID) => {
-        const state = await store.get(sessionID);
-        return state ? taskFlowHistorySnapshots(state) : [];
+    if (options.startBackend) {
+      backend = await options.startBackend(readSnapshot);
+    } else {
+      backend = await startTaskFlowBackend(readSnapshot, {
+        readHistory: async (sessionID) => {
+          const state = await store.get(sessionID);
+          return state ? taskFlowHistorySnapshots(state) : [];
+        },
+        readTodos: async (sessionID) => {
+          return options.todoStore ? await options.todoStore.get(sessionID) : [];
+        }
+      });
+      if (options.todoStore) {
+        options.todoStore.attachBroadcaster((sessionID, todos, version2) => {
+          backend.pushTodos(sessionID, todos, version2);
+        });
       }
-    });
+    }
   } catch (error) {
     console.error("taskflow read-only backend unavailable", error);
   }
@@ -21313,17 +21378,93 @@ async function registerTaskFlow(ctx, options = {}) {
 var TODO_STATUSES = ["pending", "in_progress", "completed", "cancelled"];
 var TODO_PRIORITIES = ["high", "medium", "low"];
 var TODO_REMINDER_INTERVAL = 10;
-var TODO_REMINDER = "Do not forget the TODO list.";
-function createTodoStore() {
-  const bySession = new Map;
+var TODO_REMINDER = "Keep the TODO list current; it is the user's live view of your progress.";
+var TODO_STATE_VERSION = 1;
+var TODO_STORAGE_PREFIX = "todowrite/session/";
+function todoStorageKey(sessionID) {
+  return `${TODO_STORAGE_PREFIX}${encodeURIComponent(sessionID)}`;
+}
+function parseTodoStateItem(value) {
+  if (!value || typeof value !== "object")
+    return;
+  const item = value;
+  if (typeof item.content !== "string" || item.content.trim() === "")
+    return;
+  if (typeof item.status !== "string" || !TODO_STATUSES.includes(item.status))
+    return;
+  if (typeof item.priority !== "string" || !TODO_PRIORITIES.includes(item.priority))
+    return;
   return {
-    update: (sessionID, todos) => {
+    content: item.content,
+    status: item.status,
+    priority: item.priority
+  };
+}
+function parseTodoState(raw, sessionID) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return;
+  const source = raw;
+  if (source.version !== TODO_STATE_VERSION || source.sessionID !== sessionID)
+    return;
+  if (!Array.isArray(source.todos))
+    return;
+  const todos = source.todos.flatMap((item) => {
+    const todo = parseTodoStateItem(item);
+    return todo ? [todo] : [];
+  });
+  return { sessionID, todos };
+}
+function createTodoStore(options = {}) {
+  const { read, write } = options;
+  const bySession = new Map;
+  let version = 0;
+  let broadcaster;
+  return {
+    attachBroadcaster: (fn) => {
+      broadcaster = fn;
+    },
+    update: async (sessionID, todos) => {
       if (todos.length === 0)
         bySession.delete(sessionID);
       else
         bySession.set(sessionID, todos);
+      version += 1;
+      const state = {
+        version: TODO_STATE_VERSION,
+        sessionID,
+        updatedAt: Date.now(),
+        todos
+      };
+      if (write) {
+        await write(state);
+      }
+      if (broadcaster) {
+        try {
+          broadcaster(sessionID, todos, version);
+        } catch (error) {
+          console.error("todo broadcast failed", error);
+        }
+      }
     },
-    get: (sessionID) => bySession.get(sessionID) ?? []
+    // Storage-first: the plugin may run in several server instances and a
+    // read served by another instance must still reflect the latest write.
+    get: async (sessionID) => {
+      if (!read)
+        return bySession.get(sessionID) ?? [];
+      try {
+        const raw = await read(sessionID);
+        const parsed = parseTodoState(raw, sessionID);
+        const todos = parsed ? parsed.todos : [];
+        if (todos.length > 0)
+          bySession.set(sessionID, todos);
+        else
+          bySession.delete(sessionID);
+        return todos;
+      } catch (error) {
+        console.error("todo storage unavailable", error);
+        return bySession.get(sessionID) ?? [];
+      }
+    }
   };
 }
 function parseTodos(raw) {
@@ -21361,7 +21502,7 @@ function todowriteToolFactory(store) {
   const updatesBySession = new Map;
   return {
     name: "todowrite",
-    description: "Create and maintain a structured task list for the current coding session. Use it to track progress during multi-step work and keep todo statuses current.",
+    description: "Create and maintain a structured todo list for the current session; the sidebar shows it to the user live. Keep statuses current during work. For durable plans with acceptance criteria and resume-on-idle, use taskflow.",
     input: {
       type: "object",
       properties: {
@@ -21371,16 +21512,16 @@ function todowriteToolFactory(store) {
           items: {
             type: "object",
             properties: {
-              content: { type: "string", description: "Brief description of the task" },
+              content: { type: "string", description: "Brief description of the todo" },
               status: {
                 type: "string",
                 enum: TODO_STATUSES,
-                description: "Current status of the task: pending, in_progress, completed, cancelled"
+                description: "Current status of the todo: pending, in_progress, completed, cancelled"
               },
               priority: {
                 type: "string",
                 enum: TODO_PRIORITIES,
-                description: "Priority level of the task: high, medium, low"
+                description: "Priority level of the todo: high, medium, low"
               }
             },
             required: ["content", "status", "priority"]
@@ -21403,7 +21544,7 @@ function todowriteToolFactory(store) {
     execute: async (rawInput, toolCtx) => {
       const input = rawInput ?? {};
       const todos = parseTodos(input.todos);
-      store.update(toolCtx.sessionID, todos);
+      await store.update(toolCtx.sessionID, todos);
       const updateCount = (updatesBySession.get(toolCtx.sessionID) ?? 0) + 1;
       updatesBySession.set(toolCtx.sessionID, updateCount);
       const reminder = updateCount % TODO_REMINDER_INTERVAL === 0 ? `
@@ -21416,11 +21557,17 @@ ${TODO_REMINDER}` : "";
   };
 }
 async function registerTodoWriteTool(ctx) {
-  const store = createTodoStore();
+  const store = createTodoStore({
+    read: (sessionID) => ctx.storage.get(todoStorageKey(sessionID)),
+    write: (state) => ctx.storage.set(todoStorageKey(state.sessionID), state)
+  });
   const registration = await ctx.tool.transform((tools) => {
     tools.add(todowriteToolFactory(store));
   });
-  return () => registration.dispose();
+  return {
+    dispose: () => registration.dispose(),
+    store
+  };
 }
 
 // src/index.ts
@@ -21428,14 +21575,14 @@ var PLUGIN_ID = "opencode2-extra-tool";
 var src_default = exports_plugin.define({
   id: PLUGIN_ID,
   setup: async (ctx) => {
-    const disposeTodo = await registerTodoWriteTool(ctx);
+    const todoRegistration = await registerTodoWriteTool(ctx);
     try {
-      const disposeTaskFlow = await registerTaskFlow(ctx);
+      const disposeTaskFlow = await registerTaskFlow(ctx, { todoStore: todoRegistration.store });
       return async () => {
-        await Promise.all([disposeTaskFlow(), disposeTodo()]);
+        await Promise.all([disposeTaskFlow(), todoRegistration.dispose()]);
       };
     } catch (error) {
-      await disposeTodo();
+      await todoRegistration.dispose();
       throw error;
     }
   }
