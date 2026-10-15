@@ -5,9 +5,12 @@
 //
 // Data source: the loopback taskflow backend this plugin's server side runs
 // (discovery file + Bearer token, same contract as taskflow). It seeds
-// GET /v1/todos/:session once per (re)connect and then follows the
-// GET /v1/events SSE stream (`event: todos`). No session transcript access,
-// no polling in the happy path.
+// GET /v1/todos/:session on every (re)connect, follows the GET /v1/events
+// SSE stream (`event: todos`) for instant updates, and reconciles every
+// RECONCILE_MS through the storage-backed GET route — that route reads
+// plugin storage fresh, so the widget stays correct even when this client
+// lands on a different server instance than the one handling the writes.
+// No session transcript access.
 //
 // Deps (in ~/.config/opencode/package.json): @opencode-ai/plugin@0.0.0-beta-18314
 // (the build-matching SDK), @opentui/solid@0.5.17, solid-js.
@@ -55,16 +58,33 @@ function discoveryPath(): string {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// Reconcile interval: SSE gives instant updates from the instance that
+// handled the write; the poll keeps every other view honest.
+const RECONCILE_MS = 15000
+
 const todosBySession = new Map<string, Todo[]>()
 const openSessions = new Set<string>()
 const [tick, setTick] = createSignal(0)
 let clientStarted = false
 let warned = false
+let lastBackend: BackendState | null = null
 
 function ensureClient() {
   if (clientStarted) return
   clientStarted = true
   void run()
+  void pollLoop()
+}
+
+async function pollLoop() {
+  for (;;) {
+    await sleep(RECONCILE_MS)
+    const backend = lastBackend
+    if (!backend) continue
+    for (const sessionID of openSessions) {
+      await seedSession(backend, sessionID)
+    }
+  }
 }
 
 async function run() {
@@ -72,6 +92,7 @@ async function run() {
   for (;;) {
     try {
       const backend = await readDiscovery()
+      lastBackend = backend
       backoff = 1000
       await connect(backend)
     } catch (error) {
@@ -97,20 +118,27 @@ async function readDiscovery(): Promise<BackendState> {
   return { url: parsed.url, token: parsed.token }
 }
 
+async function seedSession(backend: BackendState, sessionID: string) {
+  const base = backend.url.endsWith("/") ? backend.url : `${backend.url}/`
+  try {
+    const response = await fetch(`${base}v1/todos/${encodeURIComponent(sessionID)}`, {
+      headers: { authorization: `Bearer ${backend.token}` },
+    })
+    if (!response.ok) return
+    const body = (await response.json()) as { todos?: unknown }
+    applyTodos(sessionID, body.todos)
+  } catch {
+    // best-effort read; the next reconcile round retries
+  }
+}
+
 async function connect(backend: BackendState) {
   const base = backend.url.endsWith("/") ? backend.url : `${backend.url}/`
   const headers = { authorization: `Bearer ${backend.token}` }
   // Seed the sessions currently open in the TUI (covers updates made while
   // the stream was down); the SSE stream is authoritative afterwards.
   for (const sessionID of openSessions) {
-    try {
-      const response = await fetch(`${base}v1/todos/${encodeURIComponent(sessionID)}`, { headers })
-      if (!response.ok) continue
-      const body = (await response.json()) as { todos?: unknown }
-      applyTodos(sessionID, body.todos)
-    } catch {
-      // best-effort seed
-    }
+    await seedSession(backend, sessionID)
   }
   const response = await fetch(`${base}v1/events`, { headers })
   if (!response.ok || !response.body) {
@@ -150,8 +178,12 @@ function handleFrame(frame: string) {
 }
 
 function applyTodos(sessionID: string, value: unknown) {
-  todosBySession.set(sessionID, guardTodos(value))
-  setTick((value) => value + 1)
+  const todos = guardTodos(value)
+  const previous = todosBySession.get(sessionID)
+  // Reconcile polls re-deliver unchanged state — skip the redraw.
+  if (previous && previous.length === todos.length && JSON.stringify(previous) === JSON.stringify(todos)) return
+  todosBySession.set(sessionID, todos)
+  setTick((t) => t + 1)
 }
 
 // Minimal shape guard: the server validates every todo on write, so a record

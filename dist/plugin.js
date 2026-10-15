@@ -21417,7 +21417,6 @@ function parseTodoState(raw, sessionID) {
 function createTodoStore(options = {}) {
   const { read, write } = options;
   const bySession = new Map;
-  const seeded = new Set;
   let version = 0;
   let broadcaster;
   return {
@@ -21447,24 +21446,23 @@ function createTodoStore(options = {}) {
         }
       }
     },
+    // Storage-first: the plugin may run in several server instances and a
+    // read served by another instance must still reflect the latest write.
     get: async (sessionID) => {
-      const hit = bySession.get(sessionID);
-      if (hit)
-        return hit;
-      if (!read || seeded.has(sessionID))
-        return [];
-      seeded.add(sessionID);
+      if (!read)
+        return bySession.get(sessionID) ?? [];
       try {
         const raw = await read(sessionID);
         const parsed = parseTodoState(raw, sessionID);
-        if (parsed && parsed.todos.length > 0) {
-          bySession.set(sessionID, parsed.todos);
-          return parsed.todos;
-        }
-        return [];
+        const todos = parsed ? parsed.todos : [];
+        if (todos.length > 0)
+          bySession.set(sessionID, todos);
+        else
+          bySession.delete(sessionID);
+        return todos;
       } catch (error) {
         console.error("todo storage unavailable", error);
-        return [];
+        return bySession.get(sessionID) ?? [];
       }
     }
   };

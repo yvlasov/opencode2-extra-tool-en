@@ -48,8 +48,9 @@ TUI plugin dependencies in `~/.config/opencode/package.json`
 `todowrite` replaces the current session's full structured task list. Its input is
 `{ todos: [{ content, status, priority }] }`; an empty list clears it. The list
 persists in OpenCode plugin storage across restarts and is shown live in the
-sidebar widget (`tui.tsx`), which is fed by the loopback endpoint described
-below — no transcript parsing, no polling.
+sidebar widget (`tui.tsx`), fed by the loopback endpoint described below:
+instant SSE pushes plus a periodic storage-backed reconcile — no transcript
+access.
 
 ## Taskflow
 
@@ -87,8 +88,10 @@ This endpoint is intended for a local bridge such as `opencode2-web`; it is not
 exposed directly to browsers.
 
 The same endpoint also serves the todo state: `GET /v1/todos/:session` returns
-the session's current list (`{ available, todos }`), and `GET /v1/events` is a
-server-sent event stream that emits `event: todos` frames
-(`{ sessionID, todos, version }`) on every `todowrite` call, with a comment
-heartbeat every 15 s. The TUI sidebar widget consumes exactly these two routes,
-so the sidebar stays in sync without any transcript access.
+the session's current list (`{ available, todos }`), read fresh from plugin
+storage on every request — so the answer stays correct even when several
+server instances each run a backend. `GET /v1/events` is a server-sent event
+stream that emits `event: todos` frames (`{ sessionID, todos, version }`) on
+every `todowrite` call, with a comment heartbeat every 15 s. The TUI sidebar
+widget follows the SSE stream for instant updates and reconciles through the
+GET route every 15 s.
